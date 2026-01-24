@@ -1,0 +1,7 @@
+{
+    "name": "sp-vision-25",
+    "version": "0.1.0",
+    "dependencies": [
+        "ceres"
+    ]
+}
