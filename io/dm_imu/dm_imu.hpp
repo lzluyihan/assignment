@@ -18,34 +18,34 @@ namespace io
 
 struct __attribute__((packed)) IMU_Receive_Frame
 {
-  uint8_t FrameHeader1;
-  uint8_t flag1;
-  uint8_t slave_id1;
-  uint8_t reg_acc;
-  uint32_t accx_u32;
-  uint32_t accy_u32;
-  uint32_t accz_u32;
-  uint16_t crc1;
-  uint8_t FrameEnd1;
+  uint8_t FrameHeader1;    // 第一帧头（1字节）
+  uint8_t flag1;           // 第一帧标志位（1字节）
+  uint8_t slave_id1;       // 第一帧从机ID（1字节）
+  uint8_t reg_acc;         // 加速度计寄存器地址（1字节）
+  uint32_t accx_u32;       // X轴加速度（4字节，二进制转float用）
+  uint32_t accy_u32;       // Y轴加速度（4字节）
+  uint32_t accz_u32;       // Z轴加速度（4字节）
+  uint16_t crc1;           // 第一帧CRC16校验值（2字节）
+  uint8_t FrameEnd1;       // 第一帧结束位（1字节）
 
-  uint8_t FrameHeader2;
+  uint8_t FrameHeader2;    // 第二帧头（陀螺仪数据帧）
   uint8_t flag2;
   uint8_t slave_id2;
-  uint8_t reg_gyro;
-  uint32_t gyrox_u32;
-  uint32_t gyroy_u32;
-  uint32_t gyroz_u32;
-  uint16_t crc2;
+  uint8_t reg_gyro;        // 陀螺仪寄存器地址
+  uint32_t gyrox_u32;      // X轴角速度
+  uint32_t gyroy_u32;      // Y轴角速度
+  uint32_t gyroz_u32;      // Z轴角速度
+  uint16_t crc2;           // 第二帧CRC校验值
   uint8_t FrameEnd2;
 
-  uint8_t FrameHeader3;
+  uint8_t FrameHeader3;    // 第三帧头（欧拉角数据帧）
   uint8_t flag3;
   uint8_t slave_id3;
-  uint8_t reg_euler;  //r-p-y
-  uint32_t roll_u32;
-  uint32_t pitch_u32;
-  uint32_t yaw_u32;
-  uint16_t crc3;
+  uint8_t reg_euler;       // 欧拉角寄存器地址（roll/pitch/yaw）
+  uint32_t roll_u32;       // 横滚角
+  uint32_t pitch_u32;      // 俯仰角
+  uint32_t yaw_u32;        // 偏航角
+  uint16_t crc3;           // 第三帧CRC校验值
   uint8_t FrameEnd3;
 };
 

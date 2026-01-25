@@ -59,6 +59,7 @@ void DM_IMU::init_serial()
 
 void DM_IMU::get_imu_data_thread()
 {
+  uint64_t crc_fail_count = 0;
   while (!stop_thread_) {
     if (!serial_.isOpen()) {
       tools::logger()->warn("In get_imu_data_thread,imu serial port unopen");
@@ -73,29 +74,59 @@ void DM_IMU::get_imu_data_thread()
     {
       serial_.read((uint8_t *)(&receive_data.accx_u32), 57 - 4);
 
-      if (tools::get_crc16((uint8_t *)(&receive_data.FrameHeader1), 16) == receive_data.crc1) {
+      {
+        const uint16_t computed_crc = tools::get_crc16((uint8_t *)(&receive_data.FrameHeader1), 16);
+        if (computed_crc == receive_data.crc1) {
         data.accx = *((float *)(&receive_data.accx_u32));
         data.accy = *((float *)(&receive_data.accy_u32));
         data.accz = *((float *)(&receive_data.accz_u32));
+        } else {
+          crc_fail_count++;
+          if (crc_fail_count <= 10 || crc_fail_count % 2000 == 0) {
+            tools::logger()->warn(
+              "[DM_IMU] CRC16 check failed (acc frame): remote_crc(对方发来)=0x{:04x}, local_crc(本地计算)=0x{:04x}",
+              receive_data.crc1, computed_crc);
+          }
+        }
       }
-      if (tools::get_crc16((uint8_t *)(&receive_data.FrameHeader2), 16) == receive_data.crc2) {
+      {
+        const uint16_t computed_crc = tools::get_crc16((uint8_t *)(&receive_data.FrameHeader2), 16);
+        if (computed_crc == receive_data.crc2) {
         data.gyrox = *((float *)(&receive_data.gyrox_u32));
         data.gyroy = *((float *)(&receive_data.gyroy_u32));
         data.gyroz = *((float *)(&receive_data.gyroz_u32));
+        } else {
+          crc_fail_count++;
+          if (crc_fail_count <= 10 || crc_fail_count % 2000 == 0) {
+            tools::logger()->warn(
+              "[DM_IMU] CRC16 check failed (gyro frame): remote_crc(对方发来)=0x{:04x}, local_crc(本地计算)=0x{:04x}",
+              receive_data.crc2, computed_crc);
+          }
+        }
       }
-      if (tools::get_crc16((uint8_t *)(&receive_data.FrameHeader3), 16) == receive_data.crc3) {
+      {
+        const uint16_t computed_crc = tools::get_crc16((uint8_t *)(&receive_data.FrameHeader3), 16);
+        if (computed_crc == receive_data.crc3) {
         data.roll = *((float *)(&receive_data.roll_u32));
         data.pitch = *((float *)(&receive_data.pitch_u32));
         data.yaw = *((float *)(&receive_data.yaw_u32));
         // tools::logger()->debug(
         //   "yaw: {:.2f}, pitch: {:.2f}, roll: {:.2f}", static_cast<double>(data.yaw),
         //   static_cast<double>(data.pitch), static_cast<double>(data.roll));
+        } else {
+          crc_fail_count++;
+          if (crc_fail_count <= 10 || crc_fail_count % 2000 == 0) {
+            tools::logger()->warn(
+              "[DM_IMU] CRC16 check failed (angle frame): remote_crc(对方发来)=0x{:04x}, local_crc(本地计算)=0x{:04x}",
+              receive_data.crc3, computed_crc);
+          }
+        }
       }
       auto timestamp = std::chrono::steady_clock::now();
       Eigen::Quaterniond q = Eigen::AngleAxisd(data.yaw * M_PI / 180, Eigen::Vector3d::UnitZ()) *
                              Eigen::AngleAxisd(data.pitch * M_PI / 180, Eigen::Vector3d::UnitY()) *
                              Eigen::AngleAxisd(data.roll * M_PI / 180, Eigen::Vector3d::UnitX());
-      q.normalize();
+      q.normalize();//四元数归一化
       queue_.push({q, timestamp});
     } else {
       tools::logger()->info("[DM_IMU] failed to get correct data");
@@ -115,14 +146,14 @@ Eigen::Quaterniond DM_IMU::imu_at(std::chrono::steady_clock::time_point timestam
 
   Eigen::Quaterniond q_a = data_ahead_.q.normalized();
   Eigen::Quaterniond q_b = data_behind_.q.normalized();
-  auto t_a = data_ahead_.timestamp;
-  auto t_b = data_behind_.timestamp;
-  auto t_c = timestamp;
-  std::chrono::duration<double> t_ab = t_b - t_a;
-  std::chrono::duration<double> t_ac = t_c - t_a;
+  auto t_a = data_ahead_.timestamp; // 前帧时间戳
+  auto t_b = data_behind_.timestamp;  // 后帧时间戳
+  auto t_c = timestamp;              // 目标时间戳
+  std::chrono::duration<double> t_ab = t_b - t_a;  // 前后帧的时间差（秒）
+  std::chrono::duration<double> t_ac = t_c - t_a;  // 前帧到目标时间的差（秒）
 
   // 四元数插值
-  auto k = t_ac / t_ab;
+  auto k = t_ac / t_ab; // 插值系数（0≤k≤1）：目标时间在前后帧之间的比例
   Eigen::Quaterniond q_c = q_a.slerp(k, q_b).normalized();
 
   return q_c;

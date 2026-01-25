@@ -12,17 +12,9 @@ Gimbal::Gimbal(const std::string & config_path)
   auto yaml = tools::load(config_path);
   auto com_port = tools::read<std::string>(yaml, "com_port");
 
-  uint32_t baudrate = 115200u;
-  uint32_t timeout_ms = 50u; 
-  
   try {
     serial_.setPort(com_port);
     serial_.open();
-    //以下三行新增的
-    serial_.setBaudrate(baudrate);
-    auto time_out = serial::Timeout::simpleTimeout(timeout_ms);
-    serial_.setTimeout(time_out);
-
   } catch (const std::exception & e) {
     tools::logger()->error("[Gimbal] Failed to open serial: {}", e.what());
     exit(1);
@@ -30,21 +22,8 @@ Gimbal::Gimbal(const std::string & config_path)
 
   thread_ = std::thread(&Gimbal::read_thread, this);
 
-  //queue_.pop();
-  // tools::logger()->info("[Gimbal] First q received.");
-  int wait_count = 0;
-  const int max_wait = 300;
-  while (queue_.empty() && wait_count < max_wait) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    wait_count++;
-  }
-
-  if (!queue_.empty()) {
-    queue_.pop();
-    tools::logger()->info("[Gimbal] First q received.");
-  } else {
-    tools::logger()->warn("[Gimbal] No data received in 3s, skip pop.");
-  }//在调试过程中出现线程堵塞的情况
+  queue_.pop();
+  tools::logger()->info("[Gimbal] First q received.");
 }
 
 Gimbal::~Gimbal()
@@ -84,33 +63,8 @@ std::string Gimbal::str(GimbalMode mode) const
 
 Eigen::Quaterniond Gimbal::q(std::chrono::steady_clock::time_point t)
 {
-  //新增的，用于调试线程堵塞问题
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-  while (true) 
-  {
-    // pop前先判断队列非空，避免阻塞 
-    if (queue_.empty()) 
-    {
-      //if是新增的判断
-      if (std::chrono::steady_clock::now() >= deadline)
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return has_last_q_ ? last_q_ : Eigen::Quaterniond{1.0, 0.0, 0.0, 0.0};
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-
+  while (true) {
     auto [q_a, t_a] = queue_.pop();
-
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      last_q_ = q_a;
-      has_last_q_ = true;
-    }
-
-    if (queue_.empty()) return q_a;
-
     auto [q_b, t_b] = queue_.front();
     auto t_ab = tools::delta_time(t_a, t_b);
     auto t_ac = tools::delta_time(t_a, t);
@@ -132,9 +86,9 @@ void Gimbal::send(io::VisionToGimbal VisionToGimbal)
   tx_data_.pitch = VisionToGimbal.pitch;
   tx_data_.pitch_vel = VisionToGimbal.pitch_vel;
   tx_data_.pitch_acc = VisionToGimbal.pitch_acc;
-  tx_data_.crc16 = tools::get_crc16(
-    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
- //x_data_.crc16 = 0;
+  tx_data_.crc8 = tools::get_crc8(
+    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc8));
+  tx_data_.tail = VisionToGimbal.tail;
 
   try {
     serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
@@ -154,14 +108,12 @@ void Gimbal::send(
   tx_data_.pitch = pitch;
   tx_data_.pitch_vel = pitch_vel;
   tx_data_.pitch_acc = pitch_acc;
-  tx_data_.crc16 = tools::get_crc16(
-    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.crc16));
+  tx_data_.crc8 = tools::get_crc8(
+    reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_) - sizeof(tx_data_.get_crc8) - sizeof(tx_data_.tail));
 
-  try 
-  {
+  try {
     serial_.write(reinterpret_cast<uint8_t *>(&tx_data_), sizeof(tx_data_));
-  } catch (const std::exception & e) 
-  {
+  } catch (const std::exception & e) {
     tools::logger()->warn("[Gimbal] Failed to write serial: {}", e.what());
   }
 }
@@ -171,7 +123,7 @@ bool Gimbal::read(uint8_t * buffer, size_t size)
   try {
     return serial_.read(buffer, size) == size;
   } catch (const std::exception & e) {
-   tools::logger()->warn("[Gimbal] Failed to read serial: {}", e.what());
+    // tools::logger()->warn("[Gimbal] Failed to read serial: {}", e.what());
     return false;
   }
 }
@@ -180,11 +132,6 @@ void Gimbal::read_thread()
 {
   tools::logger()->info("[Gimbal] read_thread started.");
   int error_count = 0;
-
-  //新增的
-  uint64_t crc_fail_count = 0;
-  uint64_t read_fail_count = 0;
-  auto last_stat = std::chrono::steady_clock::now();
 
   while (!quit_) {
     if (error_count > 5000) {
@@ -196,20 +143,10 @@ void Gimbal::read_thread()
 
     if (!read(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_.head))) {
       error_count++;
-      read_fail_count++;
       continue;
     }
 
-    //if (rx_data_.head != 0xff) continue;
-    if (rx_data_.head != 0xff) 
-    {
-      error_count++;
-      if (error_count % 2000 == 0) {
-        tools::logger()->warn(
-          "[Gimbal] Head mismatch: expected 0xff, got {:#04x}", static_cast<int>(rx_data_.head));
-      }
-      continue;
-    }
+    if (rx_data_.head != 0xff) continue;
 
     auto t = std::chrono::steady_clock::now();
 
@@ -217,37 +154,17 @@ void Gimbal::read_thread()
           reinterpret_cast<uint8_t *>(&rx_data_) + sizeof(rx_data_.head),
           sizeof(rx_data_) - sizeof(rx_data_.head))) {
       error_count++;
-      read_fail_count++;
       continue;
     }
 
-    if (!tools::check_crc16(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_))) 
-    {
-      //tools::logger()->debug("[Gimbal] CRC16 check failed.");
-      error_count++;
-      crc_fail_count++;
-      if (crc_fail_count % 2000 == 0) 
-      {
-        const auto * bytes = reinterpret_cast<const uint8_t *>(&rx_data_);
-        uint16_t received_crc = (bytes[sizeof(rx_data_) - 1] << 8) | bytes[sizeof(rx_data_) - 2];
-        uint16_t computed_crc = tools::get_crc16(bytes, sizeof(rx_data_) - 2);
-        tools::logger()->warn(
-          "[Gimbal] CRC16 failed (received=0x{:04x}, computed=0x{:04x}, tail=[0x{:02x} 0x{:02x}])",
-          received_crc, computed_crc, bytes[sizeof(rx_data_) - 2], bytes[sizeof(rx_data_) - 1]);
-      }
+    /*if (!tools::check_crc8(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_))) {
+      tools::logger()->debug("[Gimbal] CRC8 check failed.");
       continue;
-    }
+    }*/
 
     error_count = 0;
     Eigen::Quaterniond q(rx_data_.q[0], rx_data_.q[1], rx_data_.q[2], rx_data_.q[3]);
     queue_.push({q, t});
-
-//新增，逻辑同上
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      last_q_ = q;
-      has_last_q_ = true;
-    }
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -257,14 +174,6 @@ void Gimbal::read_thread()
     state_.pitch_vel = rx_data_.pitch_vel;
     state_.bullet_speed = rx_data_.bullet_speed;
     state_.bullet_count = rx_data_.bullet_count;
-
-    //持续输出，用于判断是否正常
-    auto now = std::chrono::steady_clock::now();
-    if (now - last_stat >= std::chrono::seconds(1)) {
-      last_stat = now;
-      tools::logger()->info(
-        "[Gimbal] rx stats: crc_fail={}, read_fail={}", crc_fail_count, read_fail_count);
-    }
 
     switch (rx_data_.mode) {
       case 0:
@@ -311,4 +220,5 @@ void Gimbal::reconnect()
     }
   }
 }
-}//namespace io
+
+}  // namespace io
